@@ -1,9 +1,9 @@
-import { SignUp } from '@clerk/nextjs';
+import CustomForm from "../../components/CustomForm";
 
 const SignUpPage = () => {
   return (
     <>
-      <SignUp />
+      <CustomForm />
     </>
   );
 };

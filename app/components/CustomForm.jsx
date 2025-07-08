@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useSignUp } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
-import { FaGoogle } from "react-icons/fa";
+import { FaGoogle, FaEye, FaEyeSlash, FaCheck, FaTimes } from "react-icons/fa";
 
 const CustomForm = () => {
   const { isLoaded, signUp, setActive } = useSignUp();
@@ -13,12 +13,49 @@ const CustomForm = () => {
     password: "",
     firstName: "",
     lastName: "",
+    username: "",
   });
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingVerification, setPendingVerification] = useState(false);
   const [code, setCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [isRateLimited, setIsRateLimited] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const [verificationSuccess, setVerificationSuccess] = useState(false);
+  const [passwordStrength, setPasswordStrength] = useState({
+    score: 0,
+    feedback: [],
+  });
+
+  // Password strength checker
+  const checkPasswordStrength = (password) => {
+    const feedback = [];
+    let score = 0;
+
+    if (password.length >= 8) {
+      score += 1;
+      feedback.push("At least 8 characters");
+    }
+    if (/[a-z]/.test(password)) {
+      score += 1;
+      feedback.push("Contains lowercase letter");
+    }
+    if (/[A-Z]/.test(password)) {
+      score += 1;
+      feedback.push("Contains uppercase letter");
+    }
+    if (/[0-9]/.test(password)) {
+      score += 1;
+      feedback.push("Contains number");
+    }
+    if (/[^A-Za-z0-9]/.test(password)) {
+      score += 1;
+      feedback.push("Contains special character");
+    }
+
+    return { score, feedback };
+  };
 
   // Form validation
   const validateForm = () => {
@@ -29,6 +66,14 @@ const CustomForm = () => {
     if (!formData.lastName.trim()) {
       newErrors.lastName = "Last name is required";
     }
+    if (!formData.username.trim()) {
+      newErrors.username = "Username is required";
+    } else if (formData.username.length < 3) {
+      newErrors.username = "Username must be at least 3 characters";
+    } else if (!/^[a-zA-Z0-9_]+$/.test(formData.username)) {
+      newErrors.username =
+        "Username can only contain letters, numbers, and underscores";
+    }
     if (!formData.email.trim()) {
       newErrors.email = "Email is required";
     } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
@@ -36,8 +81,10 @@ const CustomForm = () => {
     }
     if (!formData.password) {
       newErrors.password = "Password is required";
-    } else if (formData.password.length < 6) {
-      newErrors.password = "Password must be at least 6 characters";
+    } else if (formData.password.length < 8) {
+      newErrors.password = "Password must be at least 8 characters";
+    } else if (passwordStrength.score < 3) {
+      newErrors.password = "Password is too weak";
     }
     return newErrors;
   };
@@ -49,29 +96,70 @@ const CustomForm = () => {
       ...prev,
       [name]: value,
     }));
+
+    // Update password strength when password changes
+    if (name === "password") {
+      setPasswordStrength(checkPasswordStrength(value));
+    }
+
+    // Clear errors when user starts typing
+    if (errors[name]) {
+      setErrors((prev) => ({
+        ...prev,
+        [name]: "",
+      }));
+    }
   };
 
   // Handle form submission
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setErrors({});
+
     if (!isLoaded) return;
+
     const validationErrors = validateForm();
     setErrors(validationErrors);
+
     if (Object.keys(validationErrors).length === 0) {
       try {
+        console.log("Creating sign up...");
         await signUp.create({
           email_address: formData.email,
           password: formData.password,
           first_name: formData.firstName,
           last_name: formData.lastName,
+          username: formData.username,
         });
+
+        // Send the email verification
         await signUp.prepareEmailAddressVerification({
           strategy: "email_code",
         });
+
+        // Change the UI to our pending section
         setPendingVerification(true);
       } catch (error) {
-        setErrors({ submit: "An error occurred during sign up" });
+        console.error("Sign up error:", error);
+
+        // Handle rate limiting specifically
+        if (error.status === 429) {
+          setErrors({
+            submit:
+              "Too many requests. Please wait for the timer to complete before trying again.",
+          });
+          setIsRateLimited(true);
+          startCountdown(300); // Start 5-minute countdown
+        } else if (error.errors && error.errors.length > 0) {
+          const errorMessage = error.errors[0].message;
+          setErrors({ submit: errorMessage });
+        } else {
+          setErrors({
+            submit:
+              "An error occurred during sign up. Please check your Clerk configuration.",
+          });
+        }
       }
     }
     setIsSubmitting(false);
@@ -81,99 +169,209 @@ const CustomForm = () => {
   const onPressVerify = async (e) => {
     e.preventDefault();
     if (!isLoaded) return;
+
     try {
+      console.log("Attempting email verification with code:", code);
       const completeSignUp = await signUp.attemptEmailAddressVerification({
         code,
       });
-      if (completeSignUp.status === "complete") {
-        await setActive({ session: completeSignUp.createdSessionId });
-        router.push("/");
-      } else {
+      console.log("Verification result:", completeSignUp);
+
+      if (completeSignUp.status !== "complete") {
+        // Investigate the response, to see if there was an error
+        // or if the user needs to complete more steps.
+        console.log(JSON.stringify(completeSignUp, null, 2));
         setErrors({ verification: "Invalid verification code" });
       }
+
+      if (completeSignUp.status === "complete") {
+        console.log("Verification complete, setting active session...");
+        setVerificationSuccess(true);
+        await setActive({ session: completeSignUp.createdSessionId });
+        console.log("Session set active, redirecting to dashboard...");
+        router.push("/dashboard");
+      }
     } catch (err) {
-      setErrors({ verification: "Invalid verification code" });
+      console.error("Verification error:", JSON.stringify(err, null, 2));
+
+      // Handle specific error cases
+      if (err.errors && err.errors.length > 0) {
+        const error = err.errors[0];
+        if (error.code === "verification_expired") {
+          setErrors({
+            verification:
+              "Verification code has expired. Please request a new one.",
+          });
+        } else if (error.code === "verification_failed") {
+          setErrors({
+            verification:
+              "Invalid verification code. Please check and try again.",
+          });
+        } else {
+          setErrors({ verification: error.message });
+        }
+      } else if (err.message && err.message.includes("already verified")) {
+        // If already verified, try to set active session
+        try {
+          console.log("User already verified, setting active session...");
+          await setActive();
+          router.push("/dashboard");
+        } catch (sessionError) {
+          console.error("Session error:", sessionError);
+          setErrors({
+            verification:
+              "Verification successful but session error. Please try signing in.",
+          });
+        }
+      } else {
+        setErrors({
+          verification: "Verification failed. Please try again.",
+        });
+      }
     }
   };
 
+  // Resend verification code
+  const resendCode = async () => {
+    try {
+      console.log("Resending verification code...");
+      await signUp.prepareEmailAddressVerification({
+        strategy: "email_code",
+      });
+      console.log("New verification code sent");
+      setErrors({});
+      setCode(""); // Clear the old code
+      startCountdown(60); // Start 1-minute countdown
+    } catch (error) {
+      console.error("Resend error:", error);
+      if (error.errors && error.errors.length > 0) {
+        const errorMessage = error.errors[0].message;
+        setErrors({ verification: `Failed to resend: ${errorMessage}` });
+      } else {
+        setErrors({ verification: "Failed to resend verification code" });
+      }
+    }
+  };
+
+  // Start countdown timer
+  const startCountdown = (seconds = 300) => {
+    // 5 minutes default
+    setCountdown(seconds);
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          setIsRateLimited(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  // Format countdown time
+  const formatTime = (seconds) => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+  };
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
-        <h2 className="text-2xl font-bold mb-1 text-center">
-          Create your account
-        </h2>
-        <p className="text-gray-500 text-center mb-6 text-sm">
-          to continue to ClerkIntegration
-        </p>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+        <div className="text-center mb-8">
+          <h2 className="text-3xl font-bold text-gray-900 mb-2">
+            Create your account
+          </h2>
+          <p className="text-gray-600 text-sm">
+            Join ClerkIntegration to get started
+          </p>
+        </div>
+
         {!pendingVerification ? (
           <>
-            {/* Google Sign Up Button (UI only) */}
+            {/* Google Sign Up Button */}
             <button
               type="button"
-              className="flex items-center justify-center w-full border border-gray-300 rounded-lg py-2 mb-4 hover:bg-gray-100 transition"
+              className="flex items-center justify-center w-full border-2 border-gray-200 rounded-xl py-3 mb-6 hover:bg-gray-50 transition-colors duration-200 font-medium text-gray-700"
               disabled
             >
-              <FaGoogle className="mr-2 text-lg" />
+              <FaGoogle className="mr-3 text-lg text-red-500" />
               Continue with Google
             </button>
+
             {/* Divider */}
-            <div className="flex items-center mb-4">
+            <div className="flex items-center mb-6">
               <div className="flex-1 h-px bg-gray-200" />
-              <span className="mx-2 text-gray-400 text-xs">or</span>
+              <span className="mx-4 text-gray-400 text-sm font-medium">or</span>
               <div className="flex-1 h-px bg-gray-200" />
             </div>
+
             {/* Email/Password Form */}
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label
-                  htmlFor="firstName"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  First Name
-                </label>
-                <input
-                  type="text"
-                  id="firstName"
-                  name="firstName"
-                  value={formData.firstName}
-                  onChange={handleChange}
-                  className={`mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 ${
-                    errors.firstName ? "border-red-500" : ""
-                  }`}
-                  autoComplete="given-name"
-                />
-                {errors.firstName && (
-                  <p className="mt-1 text-xs text-red-600">
-                    {errors.firstName}
-                  </p>
-                )}
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="firstName"
+                    className="block text-sm font-semibold text-gray-700 mb-2"
+                  >
+                    First Name
+                  </label>
+                  <input
+                    type="text"
+                    id="firstName"
+                    name="firstName"
+                    value={formData.firstName}
+                    onChange={handleChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      errors.firstName
+                        ? "border-red-300 bg-red-50"
+                        : "border-gray-200 hover:border-gray-300"
+                    }`}
+                    autoComplete="given-name"
+                    placeholder="John"
+                  />
+                  {errors.firstName && (
+                    <p className="mt-2 text-sm text-red-600 flex items-center">
+                      <FaTimes className="mr-1" />
+                      {errors.firstName}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label
+                    htmlFor="lastName"
+                    className="block text-sm font-semibold text-gray-700 mb-2"
+                  >
+                    Last Name
+                  </label>
+                  <input
+                    type="text"
+                    id="lastName"
+                    name="lastName"
+                    value={formData.lastName}
+                    onChange={handleChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      errors.lastName
+                        ? "border-red-300 bg-red-50"
+                        : "border-gray-200 hover:border-gray-300"
+                    }`}
+                    autoComplete="family-name"
+                    placeholder="Doe"
+                  />
+                  {errors.lastName && (
+                    <p className="mt-2 text-sm text-red-600 flex items-center">
+                      <FaTimes className="mr-1" />
+                      {errors.lastName}
+                    </p>
+                  )}
+                </div>
               </div>
-              <div>
-                <label
-                  htmlFor="lastName"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Last Name
-                </label>
-                <input
-                  type="text"
-                  id="lastName"
-                  name="lastName"
-                  value={formData.lastName}
-                  onChange={handleChange}
-                  className={`mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 ${
-                    errors.lastName ? "border-red-500" : ""
-                  }`}
-                  autoComplete="family-name"
-                />
-                {errors.lastName && (
-                  <p className="mt-1 text-xs text-red-600">{errors.lastName}</p>
-                )}
-              </div>
+
               <div>
                 <label
                   htmlFor="email"
-                  className="block text-sm font-medium text-gray-700"
+                  className="block text-sm font-semibold text-gray-700 mb-2"
                 >
                   Email address
                 </label>
@@ -183,19 +381,26 @@ const CustomForm = () => {
                   name="email"
                   value={formData.email}
                   onChange={handleChange}
-                  className={`mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 ${
-                    errors.email ? "border-red-500" : ""
+                  className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                    errors.email
+                      ? "border-red-300 bg-red-50"
+                      : "border-gray-200 hover:border-gray-300"
                   }`}
                   autoComplete="email"
+                  placeholder="john@example.com"
                 />
                 {errors.email && (
-                  <p className="mt-1 text-xs text-red-600">{errors.email}</p>
+                  <p className="mt-2 text-sm text-red-600 flex items-center">
+                    <FaTimes className="mr-1" />
+                    {errors.email}
+                  </p>
                 )}
               </div>
+
               <div>
                 <label
                   htmlFor="password"
-                  className="block text-sm font-medium text-gray-700"
+                  className="block text-sm font-semibold text-gray-700 mb-2"
                 >
                   Password
                 </label>
@@ -206,86 +411,191 @@ const CustomForm = () => {
                     name="password"
                     value={formData.password}
                     onChange={handleChange}
-                    className={`mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 pr-10 ${
-                      errors.password ? "border-red-500" : ""
+                    className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-12 ${
+                      errors.password
+                        ? "border-red-300 bg-red-50"
+                        : "border-gray-200 hover:border-gray-300"
                     }`}
                     autoComplete="new-password"
+                    placeholder="Create a strong password"
                   />
                   <button
                     type="button"
                     tabIndex={-1}
-                    className="absolute right-2 top-2 text-gray-400 hover:text-gray-600 text-lg focus:outline-none"
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors duration-200"
                     onClick={() => setShowPassword((v) => !v)}
                   >
                     {showPassword ? (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        className="h-5 w-5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M13.875 18.825A10.05 10.05 0 0112 19c-5.523 0-10-4.477-10-10 0-1.657.403-3.22 1.125-4.575m1.875-2.25A9.956 9.956 0 0112 3c5.523 0 10 4.477 10 10 0 1.657-.403 3.22-1.125 4.575m-1.875 2.25A9.956 9.956 0 0112 21c-5.523 0-10-4.477-10-10 0-1.657.403-3.22 1.125-4.575"
-                        />
-                      </svg>
+                      <FaEyeSlash size={20} />
                     ) : (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        className="h-5 w-5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M15 12a3 3 0 11-6 0 3 3 0 016 0zm6 0c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z"
-                        />
-                      </svg>
+                      <FaEye size={20} />
                     )}
                   </button>
                 </div>
+
+                {/* Password Strength Indicator */}
+                {formData.password && (
+                  <div className="mt-3">
+                    <div className="flex items-center space-x-2 mb-2">
+                      <div className="flex space-x-1">
+                        {[1, 2, 3, 4, 5].map((level) => (
+                          <div
+                            key={level}
+                            className={`h-1 w-8 rounded-full ${
+                              level <= passwordStrength.score
+                                ? passwordStrength.score >= 4
+                                  ? "bg-green-500"
+                                  : passwordStrength.score >= 3
+                                  ? "bg-yellow-500"
+                                  : "bg-red-500"
+                                : "bg-gray-200"
+                            }`}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-xs text-gray-500">
+                        {passwordStrength.score >= 4
+                          ? "Strong"
+                          : passwordStrength.score >= 3
+                          ? "Good"
+                          : "Weak"}
+                      </span>
+                    </div>
+                    <div className="text-xs text-gray-500 space-y-1">
+                      {passwordStrength.feedback.map((item, index) => (
+                        <div key={index} className="flex items-center">
+                          <FaCheck className="mr-2 text-green-500" size={12} />
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {errors.password && (
-                  <p className="mt-1 text-xs text-red-600">{errors.password}</p>
+                  <p className="mt-2 text-sm text-red-600 flex items-center">
+                    <FaTimes className="mr-1" />
+                    {errors.password}
+                  </p>
                 )}
               </div>
+
+              <div>
+                <label
+                  htmlFor="username"
+                  className="block text-sm font-semibold text-gray-700 mb-2"
+                >
+                  Username
+                </label>
+                <input
+                  type="text"
+                  id="username"
+                  name="username"
+                  value={formData.username}
+                  onChange={handleChange}
+                  className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                    errors.username
+                      ? "border-red-300 bg-red-50"
+                      : "border-gray-200 hover:border-gray-300"
+                  }`}
+                  autoComplete="username"
+                  placeholder="Choose a username"
+                />
+                {errors.username && (
+                  <p className="mt-2 text-sm text-red-600 flex items-center">
+                    <FaTimes className="mr-1" />
+                    {errors.username}
+                  </p>
+                )}
+              </div>
+
               {errors.submit && (
-                <p className="text-xs text-red-600 text-center">
-                  {errors.submit}
-                </p>
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                  <p className="text-sm text-red-600 flex items-center">
+                    <FaTimes className="mr-2" />
+                    {errors.submit}
+                  </p>
+                  {isRateLimited && (
+                    <div className="mt-3">
+                      {countdown > 0 ? (
+                        <div className="flex items-center space-x-3">
+                          <div className="flex items-center space-x-2">
+                            <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                            <span className="text-sm text-gray-600">
+                              Time remaining:{" "}
+                              <span className="font-mono font-semibold text-blue-600">
+                                {formatTime(countdown)}
+                              </span>
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setErrors({});
+                            setIsRateLimited(false);
+                          }}
+                          className="text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors duration-200"
+                        >
+                          Try Again
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
+
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full py-2 px-4 rounded-md text-white bg-blue-600 hover:bg-blue-700 font-semibold text-sm mt-2 disabled:opacity-50"
+                className="w-full py-3 px-4 rounded-xl text-white bg-blue-600 hover:bg-blue-700 font-semibold text-sm transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isSubmitting ? "Continuing..." : "Continue"}
+                {isSubmitting ? (
+                  <div className="flex items-center justify-center">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    Creating account...
+                  </div>
+                ) : (
+                  "Create account"
+                )}
               </button>
             </form>
+
             <p className="text-center text-sm text-gray-500 mt-6">
-              Have an account?{" "}
+              Already have an account?{" "}
               <a
                 href="/sign-in"
-                className="text-blue-600 hover:underline font-medium"
+                className="text-blue-600 hover:text-blue-700 font-semibold transition-colors duration-200"
               >
                 Sign in
               </a>
             </p>
           </>
         ) : (
-          <form onSubmit={onPressVerify} className="space-y-4">
-            <h3 className="text-lg font-semibold text-center mb-2">
-              Verify your email
-            </h3>
+          <form onSubmit={onPressVerify} className="space-y-5">
+            <div className="text-center mb-6">
+              <h3 className="text-xl font-bold text-gray-900 mb-2">
+                Verify your email
+              </h3>
+              <p className="text-gray-600 text-sm">
+                We've sent a verification code to{" "}
+                <span className="font-semibold">{formData.email}</span>
+              </p>
+              {verificationSuccess && (
+                <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <p className="text-sm text-green-700 flex items-center justify-center">
+                    <span className="mr-2">✅</span>
+                    Verification successful! Redirecting...
+                  </p>
+                </div>
+              )}
+            </div>
+
             <div>
               <label
                 htmlFor="code"
-                className="block text-sm font-medium text-gray-700"
+                className="block text-sm font-semibold text-gray-700 mb-2"
               >
                 Verification Code
               </label>
@@ -294,23 +604,41 @@ const CustomForm = () => {
                 id="code"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                className={`mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 ${
-                  errors.verification ? "border-red-500" : ""
+                className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                  errors.verification
+                    ? "border-red-300 bg-red-50"
+                    : "border-gray-200 hover:border-gray-300"
                 }`}
-                placeholder="Enter verification code"
+                placeholder="Enter 6-digit code"
+                maxLength={6}
               />
               {errors.verification && (
-                <p className="mt-1 text-xs text-red-600">
+                <p className="mt-2 text-sm text-red-600 flex items-center">
+                  <FaTimes className="mr-1" />
                   {errors.verification}
                 </p>
               )}
             </div>
+
             <button
               type="submit"
-              className="w-full py-2 px-4 rounded-md text-white bg-blue-600 hover:bg-blue-700 font-semibold text-sm mt-2"
+              className="w-full py-3 px-4 rounded-xl text-white bg-blue-600 hover:bg-blue-700 font-semibold text-sm transition-colors duration-200"
             >
               Verify Email
             </button>
+
+            <div className="text-center">
+              <button
+                type="button"
+                onClick={resendCode}
+                disabled={countdown > 0}
+                className="text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {countdown > 0
+                  ? `Resend in ${formatTime(countdown)}`
+                  : "Didn't receive the code? Resend"}
+              </button>
+            </div>
           </form>
         )}
       </div>
