@@ -258,13 +258,8 @@ const CustomForm = () => {
           console.log("No session to clear or error clearing:", clearError);
         }
 
-        // Wait a bit to ensure session is cleared before redirecting and reloading
-        setTimeout(() => {
-          router.push("/sign-in");
-          setTimeout(() => {
-            window.location.reload();
-          }, 300);
-        }, 500);
+        // Redirect to login page (no auto-refresh)
+        router.push("/sign-in");
       }
     } catch (err) {
       console.error("=== Verification Error Details ===");
