@@ -12,7 +12,16 @@ export default authMiddleware({
     "/test-forms",
     "/debug",
     "/forgot-password",
+    "/api/logout",
+    "/api/oauth-callback",
   ],
+  // Force authentication check in development
+  ...(process.env.NODE_ENV === "development" && {
+    beforeAuth: (req) => {
+      // In development, we can add additional logging or checks
+      console.log("Development mode: Checking authentication for", req.url);
+    },
+  }),
 });
 
 export const config = {

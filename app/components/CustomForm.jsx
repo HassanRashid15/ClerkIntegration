@@ -2,11 +2,13 @@
 import { useState } from "react";
 import { useSignUp } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
-import { FaGoogle, FaEye, FaEyeSlash, FaCheck, FaTimes } from "react-icons/fa";
+import { FaEye, FaEyeSlash, FaCheck, FaTimes } from "react-icons/fa";
+import { useClerk } from "@clerk/nextjs";
 
 const CustomForm = () => {
   const { isLoaded, signUp, setActive } = useSignUp();
   const router = useRouter();
+  const { signOut } = useClerk();
 
   const [formData, setFormData] = useState({
     email: "",
@@ -23,6 +25,7 @@ const CustomForm = () => {
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [verificationSuccess, setVerificationSuccess] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(""); // Track current loading step
   const [passwordStrength, setPasswordStrength] = useState({
     score: 0,
     feedback: [],
@@ -60,25 +63,34 @@ const CustomForm = () => {
   // Form validation
   const validateForm = () => {
     const newErrors = {};
-    if (!formData.firstName.trim()) {
-      newErrors.firstName = "First name is required";
-    }
-    if (!formData.lastName.trim()) {
-      newErrors.lastName = "Last name is required";
-    }
-    if (!formData.username.trim()) {
-      newErrors.username = "Username is required";
-    } else if (formData.username.length < 3) {
-      newErrors.username = "Username must be at least 3 characters";
-    } else if (!/^[a-zA-Z0-9_]+$/.test(formData.username)) {
-      newErrors.username =
-        "Username can only contain letters, numbers, and underscores";
-    }
+
+    // Email validation
     if (!formData.email.trim()) {
       newErrors.email = "Email is required";
     } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
       newErrors.email = "Email is invalid";
     }
+
+    // First name validation
+    if (!formData.firstName.trim()) {
+      newErrors.firstName = "First name is required";
+    } else if (formData.firstName.trim().length < 2) {
+      newErrors.firstName = "First name must be at least 2 characters";
+    }
+
+    // Last name validation
+    if (!formData.lastName.trim()) {
+      newErrors.lastName = "Last name is required";
+    } else if (formData.lastName.trim().length < 2) {
+      newErrors.lastName = "Last name must be at least 2 characters";
+    }
+
+    // Username validation (optional)
+    if (formData.username.trim() && formData.username.trim().length < 3) {
+      newErrors.username = "Username must be at least 3 characters";
+    }
+
+    // Password validation
     if (!formData.password) {
       newErrors.password = "Password is required";
     } else if (formData.password.length < 8) {
@@ -86,6 +98,7 @@ const CustomForm = () => {
     } else if (passwordStrength.score < 3) {
       newErrors.password = "Password is too weak";
     }
+
     return newErrors;
   };
 
@@ -123,8 +136,18 @@ const CustomForm = () => {
     setErrors(validationErrors);
 
     if (Object.keys(validationErrors).length === 0) {
+      let startTime; // <-- define here
       try {
-        console.log("Creating sign up...");
+        startTime = performance.now(); // <-- set here
+        console.log("=== Sign Up Performance Debug ===");
+        console.log("Email:", formData.email);
+        console.log("First Name:", formData.firstName);
+        console.log("Last Name:", formData.lastName);
+        console.log("Username:", formData.username);
+
+        console.log("🔄 Creating sign up...");
+        setLoadingStep("Creating your account...");
+        const signUpStart = performance.now();
         await signUp.create({
           email_address: formData.email,
           password: formData.password,
@@ -132,16 +155,43 @@ const CustomForm = () => {
           last_name: formData.lastName,
           username: formData.username,
         });
+        const signUpEnd = performance.now();
+        console.log(
+          `✅ Sign up created successfully (${(signUpEnd - signUpStart).toFixed(
+            2
+          )}ms)`
+        );
+        console.log("SignUp status:", signUp.status);
+        console.log("SignUp email:", signUp.emailAddress);
 
         // Send the email verification
+        console.log("📨 Preparing email verification...");
+        setLoadingStep("Sending verification email...");
+        const verificationStart = performance.now();
         await signUp.prepareEmailAddressVerification({
           strategy: "email_code",
         });
+        const verificationEnd = performance.now();
+        console.log(
+          `✅ Email verification prepared successfully (${(
+            verificationEnd - verificationStart
+          ).toFixed(2)}ms)`
+        );
+
+        const totalTime = performance.now() - startTime;
+        console.log(`🎉 Total signup time: ${totalTime.toFixed(2)}ms`);
 
         // Change the UI to our pending section
         setPendingVerification(true);
+        setLoadingStep("");
       } catch (error) {
-        console.error("Sign up error:", error);
+        const totalTime = startTime ? performance.now() - startTime : 0;
+        console.error("=== Sign Up Error Details ===");
+        console.error(`❌ Sign up failed after ${totalTime.toFixed(2)}ms`);
+        console.error("Error type:", typeof error);
+        console.error("Error message:", error.message);
+        console.error("Error status:", error.status);
+        console.error("Full error object:", JSON.stringify(error, null, 2));
 
         // Handle rate limiting specifically
         if (error.status === 429) {
@@ -153,6 +203,7 @@ const CustomForm = () => {
           startCountdown(300); // Start 5-minute countdown
         } else if (error.errors && error.errors.length > 0) {
           const errorMessage = error.errors[0].message;
+          console.error("First error:", error.errors[0]);
           setErrors({ submit: errorMessage });
         } else {
           setErrors({
@@ -171,7 +222,12 @@ const CustomForm = () => {
     if (!isLoaded) return;
 
     try {
-      console.log("Attempting email verification with code:", code);
+      console.log("=== Email Verification Debug ===");
+      console.log("Code length:", code.length);
+      console.log("Code:", code);
+      console.log("SignUp status:", signUp.status);
+      console.log("SignUp email:", signUp.emailAddress);
+
       const completeSignUp = await signUp.attemptEmailAddressVerification({
         code,
       });
@@ -180,23 +236,48 @@ const CustomForm = () => {
       if (completeSignUp.status !== "complete") {
         // Investigate the response, to see if there was an error
         // or if the user needs to complete more steps.
-        console.log(JSON.stringify(completeSignUp, null, 2));
+        console.log(
+          "Verification incomplete. Full response:",
+          JSON.stringify(completeSignUp, null, 2)
+        );
         setErrors({ verification: "Invalid verification code" });
+        return; // Add return to prevent further execution
       }
 
       if (completeSignUp.status === "complete") {
-        console.log("Verification complete, setting active session...");
+        console.log("Verification complete - redirecting to sign-in...");
         setVerificationSuccess(true);
-        await setActive({ session: completeSignUp.createdSessionId });
-        console.log("Session set active, redirecting to dashboard...");
-        router.push("/dashboard");
+
+        // Clear any session that might have been created during verification
+        try {
+          console.log("Clearing any session created during verification...");
+          await signUp.destroy();
+          await signOut(); // <-- Ensure session is fully cleared
+          console.log("Session cleared successfully");
+        } catch (clearError) {
+          console.log("No session to clear or error clearing:", clearError);
+        }
+
+        // Wait a bit to ensure session is cleared before redirecting and reloading
+        setTimeout(() => {
+          router.push("/sign-in");
+          setTimeout(() => {
+            window.location.reload();
+          }, 300);
+        }, 500);
       }
     } catch (err) {
-      console.error("Verification error:", JSON.stringify(err, null, 2));
+      console.error("=== Verification Error Details ===");
+      console.error("Error type:", typeof err);
+      console.error("Error message:", err.message);
+      console.error("Error code:", err.code);
+      console.error("Error status:", err.status);
+      console.error("Full error object:", JSON.stringify(err, null, 2));
 
       // Handle specific error cases
       if (err.errors && err.errors.length > 0) {
         const error = err.errors[0];
+        console.error("First error:", error);
         if (error.code === "verification_expired") {
           setErrors({
             verification:
@@ -211,18 +292,18 @@ const CustomForm = () => {
           setErrors({ verification: error.message });
         }
       } else if (err.message && err.message.includes("already verified")) {
-        // If already verified, try to set active session
+        // If already verified, clear any session and redirect to sign-in
+        console.log(
+          "User already verified, clearing session and redirecting to sign-in..."
+        );
         try {
-          console.log("User already verified, setting active session...");
-          await setActive();
-          router.push("/dashboard");
-        } catch (sessionError) {
-          console.error("Session error:", sessionError);
-          setErrors({
-            verification:
-              "Verification successful but session error. Please try signing in.",
-          });
+          console.log("Clearing any session created during verification...");
+          await signUp.destroy();
+          console.log("Session cleared successfully");
+        } catch (clearError) {
+          console.log("No session to clear or error clearing:", clearError);
         }
+        router.push("/sign-in");
       } else {
         setErrors({
           verification: "Verification failed. Please try again.",
@@ -290,23 +371,6 @@ const CustomForm = () => {
 
         {!pendingVerification ? (
           <>
-            {/* Google Sign Up Button */}
-            <button
-              type="button"
-              className="flex items-center justify-center w-full border-2 border-gray-200 rounded-xl py-3 mb-6 hover:bg-gray-50 transition-colors duration-200 font-medium text-gray-700"
-              disabled
-            >
-              <FaGoogle className="mr-3 text-lg text-red-500" />
-              Continue with Google
-            </button>
-
-            {/* Divider */}
-            <div className="flex items-center mb-6">
-              <div className="flex-1 h-px bg-gray-200" />
-              <span className="mx-4 text-gray-400 text-sm font-medium">or</span>
-              <div className="flex-1 h-px bg-gray-200" />
-            </div>
-
             {/* Email/Password Form */}
             <form onSubmit={handleSubmit} className="space-y-5">
               <div className="grid grid-cols-2 gap-4">
@@ -554,7 +618,7 @@ const CustomForm = () => {
                 {isSubmitting ? (
                   <div className="flex items-center justify-center">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    Creating account...
+                    {loadingStep || "Creating account..."}
                   </div>
                 ) : (
                   "Create account"
@@ -586,7 +650,7 @@ const CustomForm = () => {
                 <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
                   <p className="text-sm text-green-700 flex items-center justify-center">
                     <span className="mr-2">✅</span>
-                    Verification successful! Redirecting...
+                    Email verified! Redirecting to sign-in...
                   </p>
                 </div>
               )}

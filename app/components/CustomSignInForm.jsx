@@ -1,11 +1,12 @@
 "use client";
 import { useState } from "react";
-import { useSignIn } from "@clerk/nextjs";
+import { useSignIn, useUser, SignInButton } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
-import { FaGoogle, FaEye, FaEyeSlash, FaTimes } from "react-icons/fa";
+import { FaEye, FaEyeSlash, FaTimes } from "react-icons/fa";
 
 const CustomSignInForm = () => {
   const { isLoaded, signIn, setActive } = useSignIn();
+  const { user } = useUser();
   const router = useRouter();
 
   const [formData, setFormData] = useState({
@@ -37,8 +38,6 @@ const CustomSignInForm = () => {
       ...prev,
       [name]: value,
     }));
-
-    // Clear errors when user starts typing
     if (errors[name]) {
       setErrors((prev) => ({
         ...prev,
@@ -52,19 +51,15 @@ const CustomSignInForm = () => {
     e.preventDefault();
     setIsSubmitting(true);
     setErrors({});
-
     if (!isLoaded) return;
-
     const validationErrors = validateForm();
     setErrors(validationErrors);
-
     if (Object.keys(validationErrors).length === 0) {
       try {
         const result = await signIn.create({
           identifier: formData.email,
           password: formData.password,
         });
-
         if (result.status === "complete") {
           await setActive({ session: result.createdSessionId });
           router.push("/dashboard");
@@ -74,67 +69,54 @@ const CustomSignInForm = () => {
           });
         }
       } catch (error) {
-        console.error("Sign in error:", error);
-        if (error.errors && error.errors.length > 0) {
-          const errorMessage = error.errors[0].message;
-          setErrors({ submit: errorMessage });
-        } else {
-          setErrors({ submit: "Invalid email or password" });
-        }
+        setErrors({ submit: "Invalid email or password" });
       }
     }
     setIsSubmitting(false);
   };
 
+  if (user) {
+    router.push("/dashboard");
+    return null;
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 py-12 px-4 sm:px-6 lg:px-8">
       <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
         <div className="text-center mb-8">
-          <h2 className="text-3xl font-bold text-gray-900 mb-2">
-            Welcome back
-          </h2>
-          <p className="text-gray-600 text-sm">
-            Sign in to your ClerkIntegration account
-          </p>
+          <h2 className="text-3xl font-bold text-gray-900 mb-2">Welcome back</h2>
+          <p className="text-gray-600 text-sm">Sign in to your ClerkIntegration account</p>
         </div>
-
-        {/* Google Sign In Button */}
-        <button
-          type="button"
-          className="flex items-center justify-center w-full border-2 border-gray-200 rounded-xl py-3 mb-6 hover:bg-gray-50 transition-colors duration-200 font-medium text-gray-700"
-          disabled
-        >
-          <FaGoogle className="mr-3 text-lg text-red-500" />
-          Continue with Google
-        </button>
-
+        {/* Clerk Social Sign In Buttons */}
+        <div className="space-y-3 mb-6">
+          <SignInButton provider="google" redirectUrl="/dashboard" afterSignInUrl="/dashboard">
+            <button className="flex items-center justify-center w-full border-2 border-gray-200 rounded-xl py-3 hover:bg-gray-50 transition-colors duration-200 font-medium text-gray-700">
+              Continue with Google
+            </button>
+          </SignInButton>
+          <SignInButton provider="github" redirectUrl="/dashboard" afterSignInUrl="/dashboard">
+            <button className="flex items-center justify-center w-full border-2 border-gray-200 rounded-xl py-3 hover:bg-gray-50 transition-colors duration-200 font-medium text-gray-700">
+              Continue with GitHub
+            </button>
+          </SignInButton>
+        </div>
         {/* Divider */}
         <div className="flex items-center mb-6">
           <div className="flex-1 h-px bg-gray-200" />
           <span className="mx-4 text-gray-400 text-sm font-medium">or</span>
           <div className="flex-1 h-px bg-gray-200" />
         </div>
-
         {/* Email/Password Form */}
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label
-              htmlFor="email"
-              className="block text-sm font-semibold text-gray-700 mb-2"
-            >
-              Email address
-            </label>
+            <label htmlFor="email" className="block text-sm font-semibold text-gray-700 mb-2">Email address</label>
             <input
               type="email"
               id="email"
               name="email"
               value={formData.email}
               onChange={handleChange}
-              className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                errors.email
-                  ? "border-red-300 bg-red-50"
-                  : "border-gray-200 hover:border-gray-300"
-              }`}
+              className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${errors.email ? "border-red-300 bg-red-50" : "border-gray-200 hover:border-gray-300"}`}
               autoComplete="email"
               placeholder="Enter your email"
             />
@@ -145,14 +127,8 @@ const CustomSignInForm = () => {
               </p>
             )}
           </div>
-
           <div>
-            <label
-              htmlFor="password"
-              className="block text-sm font-semibold text-gray-700 mb-2"
-            >
-              Password
-            </label>
+            <label htmlFor="password" className="block text-sm font-semibold text-gray-700 mb-2">Password</label>
             <div className="relative">
               <input
                 type={showPassword ? "text" : "password"}
@@ -160,11 +136,7 @@ const CustomSignInForm = () => {
                 name="password"
                 value={formData.password}
                 onChange={handleChange}
-                className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-12 ${
-                  errors.password
-                    ? "border-red-300 bg-red-50"
-                    : "border-gray-200 hover:border-gray-300"
-                }`}
+                className={`w-full px-4 py-3 rounded-xl border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-12 ${errors.password ? "border-red-300 bg-red-50" : "border-gray-200 hover:border-gray-300"}`}
                 autoComplete="current-password"
                 placeholder="Enter your password"
               />
@@ -184,23 +156,13 @@ const CustomSignInForm = () => {
               </p>
             )}
           </div>
-
           <div className="flex items-center justify-between">
             <label className="flex items-center">
-              <input
-                type="checkbox"
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
+              <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
               <span className="ml-2 text-sm text-gray-600">Remember me</span>
             </label>
-            <a
-              href="/forgot-password"
-              className="text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors duration-200"
-            >
-              Forgot password?
-            </a>
+            <a href="/forgot-password" className="text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors duration-200">Forgot password?</a>
           </div>
-
           {errors.submit && (
             <div className="bg-red-50 border border-red-200 rounded-xl p-4">
               <p className="text-sm text-red-600 flex items-center">
@@ -209,7 +171,6 @@ const CustomSignInForm = () => {
               </p>
             </div>
           )}
-
           <button
             type="submit"
             disabled={isSubmitting}
@@ -225,15 +186,9 @@ const CustomSignInForm = () => {
             )}
           </button>
         </form>
-
         <p className="text-center text-sm text-gray-500 mt-6">
           Don't have an account?{" "}
-          <a
-            href="/sign-up"
-            className="text-blue-600 hover:text-blue-700 font-semibold transition-colors duration-200"
-          >
-            Sign up
-          </a>
+          <a href="/sign-up" className="text-blue-600 hover:text-blue-700 font-semibold transition-colors duration-200">Sign up</a>
         </p>
       </div>
     </div>
